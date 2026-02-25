@@ -316,11 +316,20 @@
                 updateProgress(progress, 'Processing your PDF with AI...');
             }, 500);
 
+            const controller = new AbortController();
+            const requestTimeoutMs = 180000; // 3 minutes
+            const requestTimeout = setTimeout(() => {
+                controller.abort();
+            }, requestTimeoutMs);
+
             try {
                 const response = await fetch('/upload', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+
+                clearTimeout(requestTimeout);
 
                 clearInterval(progressInterval);
 
@@ -338,9 +347,14 @@
                     throw new Error(data.error || 'Failed to process PDF');
                 }
             } catch (error) {
+                clearTimeout(requestTimeout);
                 clearInterval(progressInterval);
                 progressContainer.classList.remove('show');
-                showError(error.message);
+                if (error.name === 'AbortError') {
+                    showError('Processing timed out. Please try again or use a smaller PDF.');
+                } else {
+                    showError(error.message);
+                }
             }
         }
 
