@@ -308,19 +308,32 @@
             errorMessage.classList.remove('show');
             successMessage.classList.remove('show');
 
-            // Simulate progress
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                progress += Math.random() * 15;
-                if (progress > 90) progress = 90;
-                updateProgress(progress, 'Processing your PDF with AI...');
-            }, 500);
+            let sessionId = null;
+            let progressInterval = null;
+            let uploadComplete = false;
 
             const controller = new AbortController();
             const requestTimeoutMs = 180000; // 3 minutes
             const requestTimeout = setTimeout(() => {
                 controller.abort();
             }, requestTimeoutMs);
+
+            // Start progress polling immediately (before upload even completes)
+            progressInterval = setInterval(async () => {
+                if (!sessionId) return; // Wait until we have session ID
+                
+                try {
+                    const progressResponse = await fetch(`/progress/${sessionId}`);
+                    const progressData = await progressResponse.json();
+                    
+                    if (progressResponse.ok && progressData.total > 0) {
+                        updateProgress(progressData.percent, 
+                            `Processing your PDF with AI... (${progressData.completed}/${progressData.total} chunks)`);
+                    }
+                } catch (error) {
+                    console.log(`Progress fetch error: ${error.message}`);
+                }
+            }, 300);
 
             try {
                 const response = await fetch('/upload', {
@@ -330,25 +343,28 @@
                 });
 
                 clearTimeout(requestTimeout);
-
-                clearInterval(progressInterval);
+                uploadComplete = true;
 
                 const data = await response.json();
 
                 if (response.ok && data.success) {
+                    sessionId = data.session_id;
+                    
+                    // Finish progress bar and wait for polling to settle
                     updateProgress(100, 'Complete!');
                     processedFilename = data.filename;
                     
                     setTimeout(() => {
+                        if (progressInterval) clearInterval(progressInterval);
                         progressContainer.classList.remove('show');
                         successMessage.classList.add('show');
-                    }, 500);
+                    }, 1000);
                 } else {
                     throw new Error(data.error || 'Failed to process PDF');
                 }
             } catch (error) {
                 clearTimeout(requestTimeout);
-                clearInterval(progressInterval);
+                if (progressInterval) clearInterval(progressInterval);
                 progressContainer.classList.remove('show');
                 if (error.name === 'AbortError') {
                     showError('Processing timed out. Please try again or use a smaller PDF.');

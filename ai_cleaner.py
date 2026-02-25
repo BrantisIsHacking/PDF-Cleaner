@@ -2,6 +2,7 @@ import os
 import time
 import concurrent.futures
 import google.generativeai as genai
+import threading
 
 def log_debug(message):
     if os.getenv("AI_CLEAN_DEBUG", "").strip().lower() in {"1", "true", "yes"}:
@@ -40,7 +41,7 @@ def split_text_into_chunks(text, max_chars):
 
     return chunks
 
-def clean_text_for_tts(text):
+def clean_text_for_tts(text, progress_callback=None):
     """
     Use Google Gemini AI to clean and optimize text for text-to-speech applications
     
@@ -52,6 +53,7 @@ def clean_text_for_tts(text):
     
     Args:
         text: Raw text extracted from PDF
+        progress_callback: Optional callback function(completed_chunks, total_chunks) for progress tracking
         
     Returns:
         Cleaned text optimized for TTS
@@ -79,45 +81,66 @@ Your tasks:
 
 Return ONLY the cleaned text, with no explanations or additional comments."""
 
-        user_prompt = f"""Please clean the following text extracted from a PDF so it can be used in a text-to-speech editor:
-
-{text}"""
-
         # Call Google Gemini API with bounded waits and chunking to avoid hanging requests
         model = genai.GenerativeModel('models/gemini-2.5-flash')
         timeout_seconds = int(os.getenv('AI_CLEAN_TIMEOUT_SECONDS', '120'))
         max_chunk_chars = int(os.getenv('AI_CLEAN_MAX_CHARS', '6000'))
+        max_workers = int(os.getenv('AI_CLEAN_MAX_WORKERS', '3'))
 
         chunks = split_text_into_chunks(text, max_chunk_chars)
         if not chunks:
             return ""
 
-        log_debug(f"Starting AI clean: chunks={len(chunks)}, max_chunk_chars={max_chunk_chars}")
+        log_debug(f"Starting AI clean: chunks={len(chunks)}, max_chunk_chars={max_chunk_chars}, workers={max_workers}")
 
-        cleaned_chunks = []
+        # Thread-safe counter for tracking completed chunks
+        completed_lock = threading.Lock()
+        completed_count = {'count': 0}
 
-        for index, chunk in enumerate(chunks, start=1):
-            log_debug(f"Chunk {index}/{len(chunks)} size={len(chunk)} starting")
-            chunk_prompt = f"""Please clean the following text extracted from a PDF so it can be used in a text-to-speech editor:
+        def process_chunk(chunk_data):
+            index, chunk = chunk_data
+            user_prompt = f"""Clean this text extracted from a PDF for text-to-speech:
 
 {chunk}"""
-
+            
             def generate_response():
-                return model.generate_content([system_prompt + "\n\n" + chunk_prompt])
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(generate_response)
-                try:
-                    started = time.perf_counter()
+                return model.generate_content([system_prompt, "\n\n", user_prompt])
+            
+            try:
+                started = time.perf_counter()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(generate_response)
                     response = future.result(timeout=timeout_seconds)
-                    elapsed = time.perf_counter() - started
-                    log_debug(f"Chunk {index}/{len(chunks)} completed in {elapsed:.2f}s")
-                except concurrent.futures.TimeoutError:
-                    log_debug(f"Chunk {index}/{len(chunks)} timed out after {timeout_seconds}s")
-                    raise Exception("AI request timed out. Please try again or reduce PDF size.")
+                elapsed = time.perf_counter() - started
+                
+                result = response.text.strip() if response and response.text else ""
+                
+                # Safely increment completed counter
+                with completed_lock:
+                    completed_count['count'] += 1
+                    current_completed = completed_count['count']
+                
+                log_debug(f"Chunk {index}/{len(chunks)} completed in {elapsed:.2f}s, total completed: {current_completed}/{len(chunks)}")
+                if progress_callback:
+                    progress_callback(current_completed, len(chunks))
+                return result
+            except concurrent.futures.TimeoutError:
+                log_debug(f"Chunk {index}/{len(chunks)} timed out after {timeout_seconds}s")
+                raise Exception("AI request timed out. Please try again or reduce PDF size.")
 
-            cleaned_chunk = response.text.strip() if response and response.text else ""
-            cleaned_chunks.append(cleaned_chunk)
+        cleaned_chunks = [None] * len(chunks)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_chunk, (index + 1, chunk)): index 
+                      for index, chunk in enumerate(chunks)}
+            
+            for future in concurrent.futures.as_completed(futures):
+                chunk_index = futures[future]
+                try:
+                    cleaned_chunks[chunk_index] = future.result()
+                except Exception as e:
+                    log_debug(f"Error processing chunk: {str(e)}")
+                    raise
 
         return "\n\n".join([c for c in cleaned_chunks if c])
     

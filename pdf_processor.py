@@ -1,8 +1,7 @@
 from PyPDF2 import PdfReader
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 
 def extract_text_from_pdf(pdf_path):
@@ -54,7 +53,7 @@ def create_cleaned_pdf(text, output_path):
         # Define styles
         styles = getSampleStyleSheet()
         
-        # Create a custom style for the body text
+        # Create a custom style for the body text with spacing built-in
         body_style = ParagraphStyle(
             'CustomBody',
             parent=styles['BodyText'],
@@ -64,18 +63,14 @@ def create_cleaned_pdf(text, output_path):
             spaceAfter=12
         )
         
-        # Split text into paragraphs
+        # Split text into paragraphs and build elements efficiently
         paragraphs = text.split('\n\n')
         
         for para_text in paragraphs:
-            if para_text.strip():
-                # Clean up the paragraph text
-                para_text = para_text.strip()
-                
-                # Create paragraph object
-                para = Paragraph(para_text, body_style)
-                elements.append(para)
-                elements.append(Spacer(1, 0.1 * inch))
+            para_text = para_text.strip()
+            if para_text:
+                # Create paragraph object - spaceAfter handles spacing, no need for Spacer
+                elements.append(Paragraph(para_text, body_style))
         
         # Build the PDF
         doc.build(elements)
